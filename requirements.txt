@@ -1,0 +1,10 @@
+AHRS==0.4.0
+docutils==0.23
+mkl-service==2.7.2
+mkl_fft @ file:///C:/b/abs_64riv3lfyn/croot/mkl_fft_1751310924052/work
+mkl_random @ file:///C:/b/abs_47jvsmau4j/croot/mkl_random_1751310922820/work
+numpy @ file:///C:/b/abs_b1pj_gvuff/croot/numpy_and_numpy_base_1755590863835/work
+opensim==4.5.2
+packaging==26.3
+pyserial==3.5
+scipy==1.15.3
