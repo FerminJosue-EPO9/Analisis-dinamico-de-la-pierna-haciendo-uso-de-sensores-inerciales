@@ -8,7 +8,7 @@ import time
 import json
 import os
 import sys
- 
+
 PUERTO_MUSLO = 'COM4'
 PUERTO_PANTORRILLA = 'COM9'
 BAUDRATE = 115200
@@ -17,21 +17,29 @@ MUESTRAS_CALIBRACION = 12000
 ARCHIVO_DATOS = "datos_sujeto.json"
 
 def gestionar_datos_sujeto():
+    """Gestiona el menú de entrada, calcula tensores de inercia por sexo y almacena los datos."""
     datos = {}
     if os.path.exists(ARCHIVO_DATOS):
         try:
             with open(ARCHIVO_DATOS, 'r') as f:
                 datos = json.load(f)
+            
+            sexo_str = "Hombre" if datos.get('sexo') == 'h' else "Mujer" if datos.get('sexo') == 'm' else "N/A"
+            
             print("\n" + "="*40)
             print(" PERFIL DE SUJETO ENCONTRADO")
             print("="*40)
+            print(f" Sexo:   {sexo_str}")
             print(f" Peso:   {datos.get('peso', 'N/A')} kg")
             print(f" Altura: {datos.get('altura', 'N/A')} m")
+            
+            if 'muslo' in datos:
+                print(" [✓] Parámetros inerciales 3D precalculados en caché.")
             print("="*40)
             
             respuesta = input("\n¿Deseas utilizar estos datos para el análisis dinámico? (s/n): ").strip().lower()
             if respuesta == 's':
-                return datos['peso'], datos['altura']
+                return datos['peso'], datos['altura'], datos.get('sexo', 'h')
         except json.JSONDecodeError:
             pass
 
@@ -42,13 +50,64 @@ def gestionar_datos_sujeto():
         try:
             peso = float(input(" Ingresa el peso del sujeto (en kg): "))
             altura = float(input(" Ingresa la altura del sujeto (en metros): "))
+            while True:
+                sexo = input(" Ingresa el sexo del sujeto (h para hombre / m para mujer): ").strip().lower()
+                if sexo in ['h', 'm']:
+                    break
+                print(" [Error] Por favor, ingresa 'h' o 'm'.")
             break
         except ValueError:
             print(" [Error] Por favor, ingresa valores numéricos válidos.")
     
+    # --- CÁLCULO DE PARÁMETROS ANTROPOMÉTRICOS (De Leva 1996 & Winter) ---
+    L_muslo = altura * 0.245
+    L_pant = altura * 0.246
+    
+    if sexo == 'h':
+        m_muslo = peso * 0.1416
+        m_pant = peso * 0.0433
+        k_muslo_x, k_muslo_y, k_muslo_z = 0.329, 0.329, 0.149
+        k_pant_x, k_pant_y, k_pant_z = 0.251, 0.246, 0.102
+    else: # sexo == 'm'
+        m_muslo = peso * 0.1478
+        m_pant = peso * 0.0481
+        k_muslo_x, k_muslo_y, k_muslo_z = 0.369, 0.364, 0.162
+        k_pant_x, k_pant_y, k_pant_z = 0.267, 0.263, 0.092
+    
+    # Momentos de Inercia principales (I = m * (k * L)^2)
+    I_muslo = {
+        "Ixx": m_muslo * (k_muslo_x * L_muslo)**2,
+        "Iyy": m_muslo * (k_muslo_y * L_muslo)**2,
+        "Izz": m_muslo * (k_muslo_z * L_muslo)**2
+    }
+    
+    I_pant = {
+        "Ixx": m_pant * (k_pant_x * L_pant)**2,
+        "Iyy": m_pant * (k_pant_y * L_pant)**2,
+        "Izz": m_pant * (k_pant_z * L_pant)**2
+    }
+    
+    datos = {
+        'peso': peso, 
+        'altura': altura,
+        'sexo': sexo,
+        'muslo': {
+            'masa': m_muslo,
+            'longitud': L_muslo,
+            'inercia': I_muslo
+        },
+        'pantorrilla': {
+            'masa': m_pant,
+            'longitud': L_pant,
+            'inercia': I_pant
+        }
+    }
+    
     with open(ARCHIVO_DATOS, 'w') as f:
-        json.dump({'peso': peso, 'altura': altura}, f, indent=4)
-    return peso, altura
+        json.dump(datos, f, indent=4)
+        
+    print("\n[Sistema] Datos inerciales calculados y guardados exitosamente.")
+    return peso, altura, sexo
 
 def parse_line(line):
     parts = line.decode('utf-8', errors='ignore').strip().split(',')
@@ -99,7 +158,6 @@ def calibrar_sensor(puerto, nombre):
                     q_scipy = np.array([q_imu[1], q_imu[2], q_imu[3], q_imu[0]])
                     buffer_calibracion.append(q_scipy)
                     
-                    # --- LÍNEA RESTAURADA: CONTADOR EN TIEMPO REAL ---
                     print(f"[{nombre}] Calibrando: {len(buffer_calibracion)}/{MUESTRAS_CALIBRACION}    ", end='\r')
             
             ser.close()
@@ -107,7 +165,6 @@ def calibrar_sensor(puerto, nombre):
             q_init_avg = np.mean(buffer_calibracion, axis=0)
             q_init_avg /= np.linalg.norm(q_init_avg)
             
-            # --- LÍNEA RESTAURADA: MENSAJE DE ÉXITO ---
             print(f"\n[{nombre}] ¡Calibración completada con éxito!")
             return R.from_quat(q_init_avg).inv(), q_imu 
             
@@ -116,7 +173,7 @@ def calibrar_sensor(puerto, nombre):
             time.sleep(5)
 
 class LectorSensor(threading.Thread):
-    def __init__(self, puerto, nombre, r_calibracion, q_imu_estabilizado, altura_sujeto, es_muslo=True):
+    def __init__(self, puerto, nombre, r_calibracion, q_imu_estabilizado, altura_sujeto, sexo_sujeto, es_muslo=True):
         super().__init__()
         self.puerto = puerto
         self.nombre = nombre
@@ -129,13 +186,16 @@ class LectorSensor(threading.Thread):
         self.aceleracion_angular = np.zeros(3)
         self.aceleracion_scom = np.zeros(3)
         
+        # Selección dinámica del SCoM basada en De Leva (1996) según sexo
         if es_muslo:
             l_segmento = 0.245 * altura_sujeto
-            y_offset = (0.50 - 0.4095) * l_segmento
+            scom_offset = 0.4095 if sexo_sujeto == 'h' else 0.3612
+            y_offset = (0.50 - scom_offset) * l_segmento
             x_offset = -0.06 
         else:
             l_segmento = 0.246 * altura_sujeto
-            y_offset = (0.50 - 0.4395) * l_segmento
+            scom_offset = 0.4395 if sexo_sujeto == 'h' else 0.4352
+            y_offset = (0.50 - scom_offset) * l_segmento
             x_offset = -0.04 
             
         self.r_vector = np.array([x_offset, y_offset, 0.0])
@@ -180,7 +240,8 @@ class LectorSensor(threading.Thread):
         self.ejecutando = False
 
 def main():
-    peso_sujeto, altura_sujeto = gestionar_datos_sujeto()
+    # Ahora la función retorna 3 variables para ajustar el modelo tridimensional
+    peso_sujeto, altura_sujeto, sexo_sujeto = gestionar_datos_sujeto()
     
     print("\nMantenga los sensores estáticos para la calibración inicial...")
     r_cal_pantorrilla, q_init_pantorrilla = calibrar_sensor(PUERTO_PANTORRILLA, "PANTORRILLA")
@@ -197,8 +258,9 @@ def main():
     c_rot_m = coord_set.get("hip_rotation_r") if coord_set.contains("hip_rotation_r") else None
     c_rod = coord_set.get("knee_angle_r") if coord_set.contains("knee_angle_r") else None
 
-    hilo_muslo = LectorSensor(PUERTO_MUSLO, "MUSLO", r_cal_muslo, q_init_muslo, altura_sujeto, es_muslo=True)
-    hilo_pantorrilla = LectorSensor(PUERTO_PANTORRILLA, "PANTORRILLA", r_cal_pantorrilla, q_init_pantorrilla, altura_sujeto, es_muslo=False)
+    # Pasamos la variable 'sexo_sujeto' a los hilos para el cálculo dinámico del SCoM
+    hilo_muslo = LectorSensor(PUERTO_MUSLO, "MUSLO", r_cal_muslo, q_init_muslo, altura_sujeto, sexo_sujeto, es_muslo=True)
+    hilo_pantorrilla = LectorSensor(PUERTO_PANTORRILLA, "PANTORRILLA", r_cal_pantorrilla, q_init_pantorrilla, altura_sujeto, sexo_sujeto, es_muslo=False)
     
     hilo_muslo.start()
     hilo_pantorrilla.start()
