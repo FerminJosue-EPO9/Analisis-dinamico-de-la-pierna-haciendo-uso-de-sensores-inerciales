@@ -1,0 +1,5 @@
+# Archivos de ejecución y datos locales del usuario
+datos_sujeto.json
+
+# Archivo de ejecución del complemento de OpenSim
+opensim.log

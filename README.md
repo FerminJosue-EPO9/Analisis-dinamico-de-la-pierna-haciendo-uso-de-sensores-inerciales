@@ -40,9 +40,9 @@ El script principal (opensim_kinematics_streamer.py) implementa una arquitectura
 > Instrucciones de uso: Para que el script funcione de manera adecuada se hacen las siguientes recomendaciones:
 
 > 1. Haber encendido y calibrado el dispositivo como se describió anteriormente.
-> 2. Instrumentar al sujeto una vez que los dispositivos hayan sido calibrados, lo más centrados sobre la rodilla y el muslo que se pueda y de manera que no se >    resbalen durante su uso.
-> 3. Al momento de ejecutar el script es ideal que el usuario se mantenga en una postura erguida y con las piernas en una posición rígida durante 2 minutos, el >    tiempo de calibración, para evitar problemas de desviaciones. 
-> 4. Es altamente recomendable mantener conectado su equipo en caso de que sea portátil, puesto que estos tienden a bajar su frecuencia de funcionamiento al >    momento de desconectarse. Se sugiere una frecuencia de procesamiento igual o mayor a los 2.9 GHz. 
+> 2. Instrumentar al sujeto una vez que los dispositivos hayan sido calibrados, lo más centrados sobre la rodilla y el muslo que se pueda y de manera que no se resbalen durante su uso.
+> 3. Al momento de ejecutar el script es ideal que el usuario se mantenga en una postura erguida y con las piernas en una posición rígida durante 2 minutos, el tiempo de calibración, para evitar problemas de desviaciones. 
+> 4. Es altamente recomendable mantener conectado su equipo en caso de que sea portátil, puesto que estos tienden a bajar su frecuencia de funcionamiento al momento de desconectarse. Se sugiere una frecuencia de procesamiento igual o mayor a los 2.9 GHz. 
 
 ## environment.yml / requirements.txt
 
