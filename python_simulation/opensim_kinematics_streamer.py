@@ -218,6 +218,34 @@ class LectorSensor(threading.Thread):
     def detener(self):
         self.ejecutando = False
 
+def exportar_a_mot(archivo_salida, buffer_datos):
+    """Genera el archivo .mot con el formato estricto de OpenSim y altura corregida."""
+    num_rows = len(buffer_datos['time'])
+    num_cols = 6 
+    
+    with open(archivo_salida, 'w') as f:
+        f.write("Coordinates\n")
+        f.write("version=1\n")
+        f.write(f"nRows={num_rows}\n")
+        f.write(f"nColumns={num_cols}\n")
+        f.write("inDegrees=yes\n")
+        f.write("endheader\n")
+        
+        # Agregamos pelvis_ty al encabezado
+        f.write("time\tpelvis_ty\thip_flexion_r\thip_adduction_r\thip_rotation_r\tknee_angle_r\n")
+        
+        for i in range(num_rows):
+            t = buffer_datos['time'][i]
+            hf = np.degrees(buffer_datos['hip_flex'][i])
+            ha = np.degrees(buffer_datos['hip_add'][i])
+            hr = np.degrees(buffer_datos['hip_rot'][i])
+            kf = np.degrees(buffer_datos['knee_flex'][i])
+            
+            # Imprimimos 0.9000 como altura constante de la pelvis en metros
+            f.write(f"{t:.4f}\t0.9000\t{hf:.4f}\t{ha:.4f}\t{hr:.4f}\t{kf:.4f}\n")
+            
+    print(f"\n[Exito] {num_rows} frames exportados exitosamente a {archivo_salida}")
+
 def main():
     datos = gestionar_datos_sujeto()
     
@@ -250,11 +278,19 @@ def main():
     hilo_muslo.start()
     hilo_pantorrilla.start()
     
+    buffer_captura = {
+        'time': [], 'hip_flex': [], 'hip_add': [], 'hip_rot': [], 'knee_flex': []
+    }
+    
     os.system('cls' if os.name == 'nt' else 'clear')
+    print("\nIniciando Captura de Datos. Presione Ctrl+C para detener y exportar.\n")
+    
+    tiempo_inicio = time.perf_counter()
     
     try:
         while True:
-            # Reasignación de nombres exactos para mantener la impresión original
+            tiempo_actual = time.perf_counter() - tiempo_inicio
+            
             r_muslo, alpha_muslo, a_scom_M, gyro_M = hilo_muslo.get_datos_cinematicos()
             r_pantorrilla, alpha_pantorrilla, a_scom_P, gyro_P = hilo_pantorrilla.get_datos_cinematicos()
 
@@ -266,27 +302,32 @@ def main():
                 adduccion_hip = ang_muslo[2]  
                 rotacion_hip = -ang_muslo[0]  
                 flexion_knee = min(0.0, -ang_pant[1] - flexion_hip)
+                
+                # --- REGISTRO DEL DATA LOGGER ---
+                buffer_captura['time'].append(tiempo_actual)
+                buffer_captura['hip_flex'].append(flexion_hip)
+                buffer_captura['hip_add'].append(adduccion_hip)
+                buffer_captura['hip_rot'].append(rotacion_hip)
+                buffer_captura['knee_flex'].append(flexion_knee)
 
-                # --- PANTORRILLA (Bottom) ---
+                # --- DINÁMICA INVERSA (Solo para visualización HUD) ---
                 tau_euler_P = np.dot(I_p, alpha_pantorrilla) + np.cross(gyro_P, np.dot(I_p, gyro_P))
                 F_rodilla = m_pant * a_scom_P 
                 r_CoM_a_Rodilla_P = np.array([0, scom_pct_p * L_pant, 0])
                 tau_rodilla = tau_euler_P + np.cross(r_CoM_a_Rodilla_P, F_rodilla)
                 
-                # --- TRANSFERENCIA ---
                 Rot_Relativa_P_a_M = r_muslo.inv() * r_pantorrilla
                 F_rodilla_en_Muslo = Rot_Relativa_P_a_M.apply(F_rodilla)
                 tau_rodilla_en_Muslo = Rot_Relativa_P_a_M.apply(tau_rodilla)
                 
-                # --- MUSLO (Up) ---
                 tau_euler_M = np.dot(I_m, alpha_muslo) + np.cross(gyro_M, np.dot(I_m, gyro_M))
                 F_cadera = (m_muslo * a_scom_M) + F_rodilla_en_Muslo
                 r_CoM_a_Cadera_M = np.array([0, scom_pct_m * L_muslo, 0])
                 r_CoM_a_Rodilla_M = np.array([0, -(1 - scom_pct_m) * L_muslo, 0]) 
                 
-                # Este es el Torque Total (Cadera absorbe el esfuerzo local propio + el de la rodilla)
                 tau_cadera = tau_euler_M + np.cross(r_CoM_a_Cadera_M, F_cadera) - np.cross(r_CoM_a_Rodilla_M, F_rodilla_en_Muslo) + tau_rodilla_en_Muslo
                 
+                # --- ACTUALIZAR OPENSIM ---
                 if c_flex_m: c_flex_m.setValue(estado, flexion_hip)
                 if c_add_m: c_add_m.setValue(estado, adduccion_hip)
                 if c_rot_m: c_rot_m.setValue(estado, rotacion_hip)
@@ -299,21 +340,37 @@ def main():
                 str_am = f"[{alpha_muslo[0]:5.1f}, {alpha_muslo[1]:5.1f}, {alpha_muslo[2]:5.1f} ]"
                 str_ap = f"[{alpha_pantorrilla[0]:5.1f}, {alpha_pantorrilla[1]:5.1f}, {alpha_pantorrilla[2]:5.1f} ]"
                 str_alpha = f"α Muslo: {str_am} | α Pant: {str_ap} rad/s²"
-                str_tau = f"Torque Flex/Ext (Nm) -> TOTAL (Cadera): {tau_cadera[0]:6.2f} | SUB-TOTAL (Rodilla): {tau_rodilla[0]:6.2f}"
+                str_tau = f"Torque (Nm) -> CADERA: {tau_cadera[0]:6.2f} | RODILLA: {tau_rodilla[0]:6.2f} | Tiempo: {tiempo_actual:.2f}s"
                 
-
                 sys.stdout.write(f"{str_hip}\n{str_alpha}\n{str_tau}\033[F\033[F")
                 sys.stdout.flush()
             
             time.sleep(0.015)
 
     except KeyboardInterrupt:
-        print("\n\n\n\nCaptura detenida por el usuario. Cerrando conexiones...")
+        print("\n\n\n\nFinalizando captura...")
     finally:
         hilo_muslo.detener()
         hilo_pantorrilla.detener()
         hilo_muslo.join(timeout=1.0)
         hilo_pantorrilla.join(timeout=1.0)
+        
+        if len(buffer_captura['time']) > 0:
+            exportar_a_mot("captura_movimiento.mot", buffer_captura)
+            print("""
+\nEl modelo actual posee 92 músculos a través de los cuales se distribuyeron las fuerzas ejercidas por y sobre el cuerpo, de los cuales 46 corresponden a la parte derecha de la cadera y la pierna. Para facilitar la búsqueda de los mismos se sugiere buscarlos a través de la siguiente organización:
+                
+1. Flexores de cadera: iliacus_r, psoas_r, tfl_r y pect_r
+2. Extensores de cadera: glut_max1_r, glut_max2_r, glut_max3_r, add_mag1_r, add_mag2_r y add_mag3_r
+3. Estabilizadores laterales: glut_med1_r, glut_med2_r, glut_med3_r, glut_min1_r, glut_min2_r, glut_min3_r, add_long_r, add_brev_r, gem_r y peri_r
+4. Biarticulares anteriores: rect_fem_r y sar_r
+5. Biarticulares posteriores: semimem_r, semiten_r, bifemlh_r y grac_r 
+6. Extensores de rodilla: vas_int_r, vas_med_r, vas_lat_r y quad_fem_r 
+7. Flexor de rodilla: bifemsh_r
+8. Flexores plantares: med_gas_r, lat_gas_r, soleus_r, tib_post_r, flex_dig_r, flex_hal_r, per_brev_r y per_long_r
+9. Doxiflesores plantares: tib_ant_r, per_tert_r, ext_dig_r y ext_hal_r
+10. Estabilizadores del tronco: ercspn_r, intobl_r, extobl_r
+""")
 
 if __name__ == "__main__":
     main()

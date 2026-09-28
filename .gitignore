@@ -3,3 +3,6 @@ datos_sujeto.json
 
 # Archivo de ejecución del complemento de OpenSim
 opensim.log
+
+#Archivo de ejecución del reporte para la optimización estática de OpenSim
+captura_movimiento.mot
