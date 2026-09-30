@@ -67,5 +67,5 @@ def extraer_datos_del_modelo(ruta_modelo):
         print(f"Error al cargar el modelo: {e}")
 
 if __name__ == "__main__":
-    ruta = "../opensim_tools/GaitModel.osim"
+    ruta = "../opensim_tools/modelo_sujeto_escalado.osim" #GaitModel.osim / modelo_sujeto_escalado.osim
     nombres_extraidos = extraer_datos_del_modelo(ruta)

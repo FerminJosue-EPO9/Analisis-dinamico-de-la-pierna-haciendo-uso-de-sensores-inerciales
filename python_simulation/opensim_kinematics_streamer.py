@@ -31,7 +31,7 @@ def gestionar_datos_sujeto():
             print(f" Altura: {datos.get('altura', 'N/A')} m")
             
             if 'muslo' in datos:
-                print(" [✓] Parámetros inerciales 3D precalculados en caché.")
+                print(" [✓] Parámetros inerciales 3D y de escalado precalculados en caché.")
             print("="*40)
             
             respuesta = input("\n¿Deseas utilizar estos datos para el análisis dinámico? (s/n): ").strip().lower()
@@ -70,20 +70,56 @@ def gestionar_datos_sujeto():
     
     I_muslo = {
         "Ixx": m_muslo * (k_muslo_x * L_muslo)**2,
-        "Iyy": m_muslo * (k_muslo_y * L_muslo)**2,
-        "Izz": m_muslo * (k_muslo_z * L_muslo)**2
+        "Iyy": m_muslo * (k_muslo_z * L_muslo)**2,
+        "Izz": m_muslo * (k_muslo_y * L_muslo)**2
     }
     
     I_pant = {
         "Ixx": m_pant * (k_pant_x * L_pant)**2,
-        "Iyy": m_pant * (k_pant_y * L_pant)**2,
-        "Izz": m_pant * (k_pant_z * L_pant)**2
+        "Iyy": m_pant * (k_pant_z * L_pant)**2,
+        "Izz": m_pant * (k_pant_y * L_pant)**2
     }
-    
+
+    L_MODELO_FEMUR = 0.3958
+    L_MODELO_TIBIA = 0.4300
+
+    L_SUJETO_FEMUR = altura * 0.245
+    L_SUJETO_TIBIA = altura * 0.246
+
+    factor_femur = L_SUJETO_FEMUR / L_MODELO_FEMUR
+    factor_tibia = L_SUJETO_TIBIA / L_MODELO_TIBIA
+
+    factores_escala = {
+        "femur": factor_femur,
+        "tibia": factor_tibia,
+        "pie": factor_tibia,
+        "pelvis": factor_femur,
+        "torso": (factor_femur + factor_tibia) / 2.0,
+    }
+
+    com_muslo = (0.4095 if sexo == 'h' else 0.3612) * L_SUJETO_FEMUR
+    com_pant  = (0.4395 if sexo == 'h' else 0.4352) * L_SUJETO_TIBIA
+
     datos = {
         'peso': peso, 'altura': altura, 'sexo': sexo,
-        'muslo': {'masa': m_muslo, 'longitud': L_muslo, 'inercia': I_muslo},
-        'pantorrilla': {'masa': m_pant, 'longitud': L_pant, 'inercia': I_pant}
+        'muslo': {
+            'masa': m_muslo,
+            'longitud': L_SUJETO_FEMUR,
+            'longitud_modelo': L_MODELO_FEMUR,
+            'inercia': I_muslo,
+            'com_y': -com_muslo,           
+            'factor_escala': factores_escala['femur']
+        },
+        'pantorrilla': {
+            'masa': m_pant,
+            'longitud': L_SUJETO_TIBIA,
+            'longitud_modelo': L_MODELO_TIBIA,
+            'inercia': I_pant,
+            'com_y': -com_pant,
+            'factor_escala': factores_escala['tibia']
+        },
+        'factores_escala_globales': factores_escala,
+        'modelo_escalado': 'modelo_sujeto_escalado.osim'   
     }
     
     with open(ARCHIVO_DATOS, 'w') as f:
@@ -152,7 +188,7 @@ def calibrar_sensor(puerto, nombre):
             time.sleep(5)
 
 class LectorSensor(threading.Thread):
-    def __init__(self, puerto, nombre, r_calibracion, q_imu_estabilizado, altura, sexo, es_muslo=True):
+    def __init__(self, puerto, nombre, r_calibracion, q_imu_estabilizado, datos, es_muslo=True):
         super().__init__()
         self.puerto = puerto
         self.nombre = nombre
@@ -167,15 +203,15 @@ class LectorSensor(threading.Thread):
         self.aceleracion_scom = np.zeros(3)
         
         if es_muslo:
-            l_seg = 0.245 * altura
-            scom_offset = 0.4095 if sexo == 'h' else 0.3612
-            y_offset = (0.50 - scom_offset) * l_seg
-            x_offset = -0.06 
+            l_seg = datos['muslo']['longitud']
+            com_y = datos['muslo']['com_y']
+            y_offset = (0.5 * l_seg) + com_y
+            x_offset = -0.06
         else:
-            l_seg = 0.246 * altura
-            scom_offset = 0.4395 if sexo == 'h' else 0.4352
-            y_offset = (0.50 - scom_offset) * l_seg
-            x_offset = -0.04 
+            l_seg = datos['pantorrilla']['longitud']
+            com_y = datos['pantorrilla']['com_y']
+            y_offset = (0.5 * l_seg) + com_y
+            x_offset = -0.04
             
         self.r_vector = np.array([x_offset, y_offset, 0.0])
         self.ejecutando = True
@@ -227,9 +263,8 @@ class LectorSensor(threading.Thread):
         self.ejecutando = False
 
 def exportar_a_mot(archivo_salida, buffer_datos):
-    """Genera el archivo .mot con el formato estricto de OpenSim y altura corregida."""
     num_rows = len(buffer_datos['time'])
-    num_cols = 6 
+    num_cols = 10  
     
     with open(archivo_salida, 'w') as f:
         f.write("Coordinates\n")
@@ -239,8 +274,9 @@ def exportar_a_mot(archivo_salida, buffer_datos):
         f.write("inDegrees=yes\n")
         f.write("endheader\n")
         
-        # Agregamos pelvis_ty al encabezado
-        f.write("time\tpelvis_ty\thip_flexion_r\thip_adduction_r\thip_rotation_r\tknee_angle_r\n")
+        f.write("time\tpelvis_ty\t"
+                "hip_flexion_r\thip_adduction_r\thip_rotation_r\tknee_angle_r\t"
+                "hip_flexion_l\thip_adduction_l\thip_rotation_l\tknee_angle_l\n")
         
         for i in range(num_rows):
             t = buffer_datos['time'][i]
@@ -249,10 +285,162 @@ def exportar_a_mot(archivo_salida, buffer_datos):
             hr = np.degrees(buffer_datos['hip_rot'][i])
             kf = np.degrees(buffer_datos['knee_flex'][i])
             
-            # Imprimimos 0.9000 como altura constante de la pelvis en metros
-            f.write(f"{t:.4f}\t0.9000\t{hf:.4f}\t{ha:.4f}\t{hr:.4f}\t{kf:.4f}\n")
+            f.write(f"{t:.4f}\t0.9000\t"
+                    f"{hf:.4f}\t{ha:.4f}\t{hr:.4f}\t{kf:.4f}\t"
+                    f"0.0000\t0.0000\t0.0000\t0.0000\n")
             
     print(f"\n[Exito] {num_rows} frames exportados exitosamente a {archivo_salida}")
+
+def generar_modelo_escalado(datos):
+
+    carpeta_modelos = os.path.abspath("../opensim_tools")
+    ruta_modelo_gen = os.path.join(carpeta_modelos, "GaitModel.osim")
+    ruta_modelo_esc = os.path.join(carpeta_modelos, datos['modelo_escalado'])
+    ruta_setup_xml = os.path.join(carpeta_modelos, "Scale_Setup.xml")
+
+    if not os.path.exists(ruta_modelo_gen):
+        print(f"[ERROR] No se encuentra el modelo genérico en: {ruta_modelo_gen}")
+        print("       Verifica la ruta y la existencia del archivo.")
+        raise FileNotFoundError(ruta_modelo_gen)
+
+    print(f"[Escalado] Modelo genérico encontrado: {ruta_modelo_gen}")
+    print(f"[Escalado] Modelo escalado se guardará en: {ruta_modelo_esc}")
+
+    print("\n" + "="*50)
+    print(" GENERANDO MODELO ESCALADO")
+    print("="*50)
+
+    if os.path.exists(ruta_modelo_esc):
+        print(f"[Escalado] El modelo '{datos['modelo_escalado']}' ya existe.")
+        resp = input("¿Deseas regenerarlo? (s/n): ").strip().lower()
+        if resp != 's':
+            print("[Escalado] Usando modelo existente.")
+            return ruta_modelo_esc
+
+    f = datos['factores_escala_globales']
+    f_femur  = f['femur']
+    f_tibia  = f['tibia']
+    f_pie    = f['pie']
+    f_pelvis = f['pelvis']
+    f_torso  = f['torso']
+
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8" ?>
+<OpenSimDocument Version="40600">
+    <ScaleTool name="scale_sujeto">
+        <mass>{datos['peso']}</mass>
+        <height>{datos['altura']}</height>
+        <GenericModelMaker>
+            <model_file>{ruta_modelo_gen}</model_file>
+        </GenericModelMaker>
+        <ModelScaler>
+            <apply>true</apply>
+            <scaling_order> manualScale </scaling_order>
+            <ScaleSet name="manual_scales">
+                <objects>
+                    <Scale name="pelvis">
+                        <scales>{f_pelvis} {f_pelvis} {f_pelvis}</scales>
+                        <segment>pelvis</segment>
+                    </Scale>
+                    <Scale name="femur_r">
+                        <scales>{f_femur} {f_femur} {f_femur}</scales>
+                        <segment>femur_r</segment>
+                    </Scale>
+                    <Scale name="femur_l">
+                        <scales>{f_femur} {f_femur} {f_femur}</scales>
+                        <segment>femur_l</segment>
+                    </Scale>
+                    <Scale name="tibia_r">
+                        <scales>{f_tibia} {f_tibia} {f_tibia}</scales>
+                        <segment>tibia_r</segment>
+                    </Scale>
+                    <Scale name="tibia_l">
+                        <scales>{f_tibia} {f_tibia} {f_tibia}</scales>
+                        <segment>tibia_l</segment>
+                    </Scale>
+                    <Scale name="talus_r">
+                        <scales>{f_pie} {f_pie} {f_pie}</scales>
+                        <segment>talus_r</segment>
+                    </Scale>
+                    <Scale name="talus_l">
+                        <scales>{f_pie} {f_pie} {f_pie}</scales>
+                        <segment>talus_l</segment>
+                    </Scale>
+                    <Scale name="calcn_r">
+                        <scales>{f_pie} {f_pie} {f_pie}</scales>
+                        <segment>calcn_r</segment>
+                    </Scale>
+                    <Scale name="calcn_l">
+                        <scales>{f_pie} {f_pie} {f_pie}</scales>
+                        <segment>calcn_l</segment>
+                    </Scale>
+                    <Scale name="toes_r">
+                        <scales>{f_pie} {f_pie} {f_pie}</scales>
+                        <segment>toes_r</segment>
+                    </Scale>
+                    <Scale name="toes_l">
+                        <scales>{f_pie} {f_pie} {f_pie}</scales>
+                        <segment>toes_l</segment>
+                    </Scale>
+                    <Scale name="torso">
+                        <scales>{f_torso} {f_torso} {f_torso}</scales>
+                        <segment>torso</segment>
+                    </Scale>
+                </objects>
+                <groups />
+            </ScaleSet>
+            <preserve_mass_distribution>true</preserve_mass_distribution>
+            <output_model_file>{ruta_modelo_esc}</output_model_file>
+        </ModelScaler>
+        <MarkerPlacer>
+            <apply>false</apply>
+        </MarkerPlacer>
+    </ScaleTool>
+</OpenSimDocument>
+"""
+
+    with open(ruta_setup_xml, 'w') as f_xml:
+        f_xml.write(xml_content)
+
+    print(f"[Escalado] Configuración escrita en: {ruta_setup_xml}")
+    print(f"[Escalado] Ejecutando osim.ScaleTool...")
+
+    try:
+        scale_tool = osim.ScaleTool(ruta_setup_xml)
+        scale_tool.run()
+        print(f"[Escalado] Modelo escalado generado: {ruta_modelo_esc}")
+    except Exception as e:
+        print(f"[ERROR] Falló ScaleTool: {e}")
+        return ruta_modelo_gen
+
+    print("[Escalado] Aplicando masa, CoM e inercia exactos...")
+    modelo_esc = osim.Model(ruta_modelo_esc)
+    estado_esc = modelo_esc.initSystem()
+    cuerpos = modelo_esc.getBodySet()
+
+    m_muslo = datos['muslo']['masa']
+    m_pant  = datos['pantorrilla']['masa']
+    com_m   = datos['muslo']['com_y']
+    com_p   = datos['pantorrilla']['com_y']
+    I_m     = datos['muslo']['inercia']
+    I_p     = datos['pantorrilla']['inercia']
+
+    for lado in ['r', 'l']:
+        femur = cuerpos.get(f"femur_{lado}")
+        femur.set_mass(m_muslo)
+        femur.set_mass_center(osim.Vec3(0, com_m, 0))
+        femur.set_inertia(osim.Vec6(I_m['Ixx'], I_m['Iyy'], I_m['Izz'], 0, 0, 0))
+        
+        tibia = cuerpos.get(f"tibia_{lado}")
+        tibia.set_mass(m_pant)
+        tibia.set_mass_center(osim.Vec3(0, com_p, 0))
+        tibia.set_inertia(osim.Vec6(I_p['Ixx'], I_p['Iyy'], I_p['Izz'], 0, 0, 0))
+
+    estado_esc = modelo_esc.initSystem()
+    modelo_esc.printToXML(ruta_modelo_esc)
+    print(f"[Escalado] Modelo final guardado con masa, CoM e inercia sobrescritos.")
+    print("="*50 + "\n")
+
+    return ruta_modelo_esc
 
 def main():
     datos = gestionar_datos_sujeto()
@@ -265,12 +453,14 @@ def main():
     scom_pct_m = 0.4095 if datos['sexo'] == 'h' else 0.3612
     scom_pct_p = 0.4395 if datos['sexo'] == 'h' else 0.4352
     
+    ruta_modelo_escalado = generar_modelo_escalado(datos)
+    
     print("\nMantenga los sensores estáticos para la calibración inicial...")
     r_cal_pantorrilla, q_init_pantorrilla = calibrar_sensor(PUERTO_PANTORRILLA, "PANTORRILLA")
     r_cal_muslo, q_init_muslo = calibrar_sensor(PUERTO_MUSLO, "MUSLO")
     
     osim.ModelVisualizer.addDirToGeometrySearchPaths("../opensim_tools/geometry")
-    modelo = osim.Model("../opensim_tools/GaitModel.osim") 
+    modelo = osim.Model(ruta_modelo_escalado)
     modelo.setUseVisualizer(True)
     estado = modelo.initSystem()
     coord_set = modelo.getCoordinateSet()
@@ -280,8 +470,8 @@ def main():
     c_rot_m = coord_set.get("hip_rotation_r") if coord_set.contains("hip_rotation_r") else None
     c_rod = coord_set.get("knee_angle_r") if coord_set.contains("knee_angle_r") else None
 
-    hilo_muslo = LectorSensor(PUERTO_MUSLO, "MUSLO", r_cal_muslo, q_init_muslo, datos['altura'], datos['sexo'], es_muslo=True)
-    hilo_pantorrilla = LectorSensor(PUERTO_PANTORRILLA, "PANTORRILLA", r_cal_pantorrilla, q_init_pantorrilla, datos['altura'], datos['sexo'], es_muslo=False)
+    hilo_muslo = LectorSensor(PUERTO_MUSLO, "MUSLO", r_cal_muslo, q_init_muslo, datos, es_muslo=True)
+    hilo_pantorrilla = LectorSensor(PUERTO_PANTORRILLA, "PANTORRILLA", r_cal_pantorrilla, q_init_pantorrilla, datos, es_muslo=False)
     
     hilo_muslo.start()
     hilo_pantorrilla.start()
@@ -311,14 +501,12 @@ def main():
                 rotacion_hip = -ang_muslo[0]  
                 flexion_knee = min(0.0, -ang_pant[1] - flexion_hip)
                 
-                # --- REGISTRO DEL DATA LOGGER ---
                 buffer_captura['time'].append(tiempo_actual)
                 buffer_captura['hip_flex'].append(flexion_hip)
                 buffer_captura['hip_add'].append(adduccion_hip)
                 buffer_captura['hip_rot'].append(rotacion_hip)
                 buffer_captura['knee_flex'].append(flexion_knee)
 
-                # --- DINÁMICA INVERSA (Solo para visualización HUD) ---
                 tau_euler_P = np.dot(I_p, alpha_pantorrilla) + np.cross(gyro_P, np.dot(I_p, gyro_P))
                 F_rodilla = m_pant * a_scom_P 
                 r_CoM_a_Rodilla_P = np.array([0, scom_pct_p * L_pant, 0])
@@ -335,7 +523,6 @@ def main():
                 
                 tau_cadera = tau_euler_M + np.cross(r_CoM_a_Cadera_M, F_cadera) - np.cross(r_CoM_a_Rodilla_M, F_rodilla_en_Muslo) + tau_rodilla_en_Muslo
                 
-                # --- ACTUALIZAR OPENSIM ---
                 if c_flex_m: c_flex_m.setValue(estado, flexion_hip)
                 if c_add_m: c_add_m.setValue(estado, adduccion_hip)
                 if c_rot_m: c_rot_m.setValue(estado, rotacion_hip)
@@ -343,7 +530,6 @@ def main():
                 modelo.realizePosition(estado)
                 modelo.getVisualizer().show(estado)
                 
-                # --- HUD EN TERMINAL ---
                 str_hip = f"Hip [Flex: {np.degrees(flexion_hip):5.1f}°, Add: {np.degrees(adduccion_hip):5.1f}°, Rot: {np.degrees(rotacion_hip):5.1f}°] | Knee Flex: {np.degrees(flexion_knee):5.1f}°"
                 str_am = f"[{alpha_muslo[0]:5.1f}, {alpha_muslo[1]:5.1f}, {alpha_muslo[2]:5.1f} ]"
                 str_ap = f"[{alpha_pantorrilla[0]:5.1f}, {alpha_pantorrilla[1]:5.1f}, {alpha_pantorrilla[2]:5.1f} ]"

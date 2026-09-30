@@ -8,3 +8,5 @@ opensim.log
 captura_movimiento.mot
 opensim_tools/3DGaitModel2392_StaticOptimization_activation.sto
 opensim_tools/3DGaitModel2392_StaticOptimization_force.sto
+opensim_tools/modelo_sujeto_escalado.osim
+opensim_tools/Scale_Setup.xml
