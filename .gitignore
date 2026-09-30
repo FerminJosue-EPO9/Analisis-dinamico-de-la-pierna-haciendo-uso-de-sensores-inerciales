@@ -6,3 +6,5 @@ opensim.log
 
 #Archivo de ejecución del reporte para la optimización estática de OpenSim
 captura_movimiento.mot
+opensim_tools/3DGaitModel2392_StaticOptimization_activation.sto
+opensim_tools/3DGaitModel2392_StaticOptimization_force.sto

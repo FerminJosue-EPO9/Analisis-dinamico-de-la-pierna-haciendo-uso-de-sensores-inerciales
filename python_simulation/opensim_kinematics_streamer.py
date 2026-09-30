@@ -194,12 +194,20 @@ class LectorSensor(threading.Thread):
                         self.gyro_actual = np.copy(gyro)
                         self.aceleracion_angular = (gyro - self.gyro_anterior) * FRECUENCIA
                         self.gyro_anterior = np.copy(gyro)
-                        
+
+                        self.q_imu = self.madgwick.updateMARG(self.q_imu, gyr=gyro, acc=accel, mag=mag)
+                        q_scipy_actual = np.array([self.q_imu[1], self.q_imu[2], self.q_imu[3], self.q_imu[0]])
+                        rotacion_actual = R.from_quat(q_scipy_actual)
+
+                        gravedad_global = np.array([0.0, 0.0, 9.81])
+
+                        gravedad_local = rotacion_actual.inv().apply(gravedad_global)
+
+                        accel_inercial = accel - gravedad_local
+
                         term_tangencial = np.cross(self.aceleracion_angular, self.r_vector)
                         term_centripeto = np.cross(gyro, np.cross(gyro, self.r_vector))
-                        self.aceleracion_scom = accel + term_tangencial + term_centripeto
-                        
-                        self.q_imu = self.madgwick.updateMARG(self.q_imu, gyr=gyro, acc=accel, mag=mag)
+                        self.aceleracion_scom = accel_inercial + term_tangencial + term_centripeto
                         while ser.in_waiting > 50: 
                             a_atr, g_atr, m_atr = parse_line(ser.readline())
                             if a_atr is not None:
